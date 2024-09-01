@@ -1,0 +1,283 @@
+---
+title: "regressions"
+author: "TH"
+date: "2024-08-20"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(sf)
+library(spData)
+library(mapview)
+library(spdep)
+library(INLA)
+library(MASS)
+library(INLAutils)
+library(AER)
+# install.packages("remotes")
+# remotes::install_github("inbo/inlatools")
+library(inlatools)
+# install.packages("remotes")
+# remotes::install_github("timcdlucas/INLAutils")
+# install.packages("sn")
+library(sn)
+
+```
+
+## SET CONSTANTS
+
+```{r}
+
+# Change source here
+src <- '/Users/toby/Dev/connectivity-analysis'
+
+```
+
+## Set up Predictors
+
+```{r}
+
+while (!is.null(dev.list()))  dev.off()
+```
+
+```{r}
+
+##### Set up predictors
+p <- paste0(src, "/data/analysis/clusters4.geojson")
+map <- st_read(p, quiet = TRUE)
+nb <- poly2nb(map)
+head(nb)
+nb2INLA("map.adj", nb)
+g <- inla.read.graph(filename = "map.adj")
+```
+
+## Check dispersion
+
+```{r}
+
+
+### Checks of dispersion
+response <- map$primary
+mean(response)
+var(response)
+hist(response, breaks=c(-0.5,0.5,1.5,2.5,3.5,4.5,5.5,6.5,7.5,8.5,9.5,10.5))
+
+rd <- glm(primary ~ 1, data = map, family = poisson)
+rd <- glm(primary ~ cluster_name_km_2, data = map, family = poisson)
+dispersiontest(rd, alternative='two.sided') # suggests UNDER-dispersion but it's just clearly not?
+
+```
+
+## Set up and run the models
+
+```{r}
+
+map$re_u <- 1:nrow(map)
+map$re_v <- 1:nrow(map)
+
+```
+
+```{r}
+
+get_formula <- function(response, ref, name) {
+  
+  formulae <- list(
+    response
+  )
+  
+  if (response == 'primary') {
+        formula_glm <- primary ~ offset(log(population_under_12)) + relevel(factor(cluster_name_km_2), ref = ref)  + area
+        formula_bym2<- primary ~ offset(log(population_under_12)) + relevel(factor(cluster_name_km_2), ref = ref) + area + f(re_u, model = "bym2", graph = g, scale.model=TRUE )
+        formula_re <- primary ~ offset(log(population_under_12)) + relevel(factor(cluster_name_km_2), ref = ref) + area + f(re_v, model = "iid")
+      formula_besag <- primary ~ offset(log(population_under_12)) + relevel(factor(cluster_name_km_2), ref = ref) + area + f(re_u, model = "besag", graph = g) # + f(re_v, model = "iid")
+      }
+      else {
+        formula_glm <- school_capacity ~ offset(log(population_under_12)) + relevel(factor(cluster_name_km_2), ref = ref)  + area
+        formula_bym2<- school_capacity ~ offset(log(population_under_12)) + relevel(factor(cluster_name_km_2), ref = ref) + area + f(re_u, model = "bym2", graph = g, scale.model=TRUE )
+        formula_re <- school_capacity ~ offset(log(population_under_12)) + relevel(factor(cluster_name_km_2), ref = ref) + area + f(re_v, model = "iid")
+      formula_besag <- school_capacity ~ offset(log(population_under_12)) + relevel(factor(cluster_name_km_2), ref = ref) + area + f(re_u, model = "besag", graph = g) # + f(re_v, model = "iid")
+      }
+  if (name == "glm") {return(formula_glm)} 
+  else if (name == "bym2") {return(formula_bym2)} 
+  else if (name == 're') {return(formula_re)}
+  else {return(formula_besag)}
+}
+
+get_formula("primary", "Urban 6", "glm")
+```
+
+```{r}
+
+results_all <- list()
+responses <- c('primary')
+names <- c(
+      're',
+      'besag',
+      'bym2',
+      'glm'
+    )
+
+for (response in responses) {
+  if (response == "school_capacity") {next()}
+  for (name in names) {
+    i <- 1
+    l_results = list()
+    for (ref in unique(map$cluster_name_km_2)) {
+
+      if (response == "primary") {family="poisson"} else {family="gaussian"}
+      formula <- get_formula(response, ref, name)
+      # print(formula)
+      n <- paste0(name, "_", family)
+      print(paste(n, ref))
+      r <- inla(
+        formula, 
+        family = family,
+        data = map,
+        control.predictor = list(compute = TRUE),
+        control.compute = list(
+          return.marginals.predictor = TRUE, cpo=TRUE, 
+          po=TRUE, dic=TRUE, waic=TRUE, likelihood.info=TRUE, residuals=TRUE
+        ),
+      )
+      l_results[[ref]] <- r
+    }
+    results_all[[response]][[n]] <- l_results
+    i <- i + 1
+  }
+}
+
+```
+
+```{r}
+
+df <- data.frame()
+for (name in names(results_all$primary)) {
+  for (ref in names(results_all$primary[[name]])) {
+    # print(paste(name, ref))
+    
+    vals <- results_all$primary[[name]][[ref]]$summary.fixed[, c(1, 2, 3, 4, 5)]
+    vals$ref <- ref
+    vals$model <- name
+    vals <- cbind(variable = rownames(vals), vals)
+    rownames(vals) <- 1:nrow(vals)
+    df <- rbind(df, vals)
+  }
+    
+}
+
+out  <-paste0(src, "/out/")
+write.csv(df, paste0(out, 'multiple_testing_coeff2.csv'))
+```
+
+```{r}
+
+results_all$primary[[name]][[ref]]$summary.fixed[, c(1, 2, 3, 4, 5)]
+```
+
+```{r}
+
+# additionally run the classical model
+result_classical <- glm(formula_glm, data=map, family='poisson')
+summary(result_classical)
+alpha_adj <- 0.05 / 45
+# pvals <- 
+summary_result <- data.frame(coef(summary(result_classical)))
+summary_result['accept_adj'] <- summary_result[,4] < alpha_adj
+
+# results_all[['classical_poisson']] <- glm(formula_glm, data=map)
+summary_result
+write.csv(summary_result, paste0(out, "classical_res.csv"))
+
+# install.packages('blmeco')
+library(blmeco)
+install.packages("boral")
+library(boral)
+# install.packages("remotes")
+remotes::install_github("rmcelreath/rethinking")
+# library(rethinking)
+
+# WAIC(result_classical)
+# DIC(result_classical)
+# get.dic(result_classical)
+```
+
+```{r}
+
+
+u6 <- results_all$`Urban 6`
+
+# Extract model assessment statistics for the urban 6 models
+df <- data.frame(
+  poisson_bym=c(
+    u6$bym2_poisson$waic$waic, 
+    u6$bym2_poisson$dic$dic, 
+    u6$bym2_poisson$mlik,
+    -mean(log(u6$bym2_poisson$cpo$cpo))
+  ),
+  nbin_bym=c(
+    u6$bym2_nbinomial$waic$waic, 
+    u6$bym2_nbinomial$dic$dic, 
+    u6$bym2_nbinomial$mlik,
+    -mean(log(u6$bym2_nbinomial$cpo$cpo))
+  ),
+  zip_bym=c(
+    u6$bym2_zeroinflatedpoisson0$waic$waic, 
+    u6$bym2_zeroinflatedpoisson0$dic$dic, 
+    u6$bym2_zeroinflatedpoisson0$mlik,
+    -mean(log(u6$bym2_zeroinflatedpoisson0$cpo$cpo))
+  ),
+  poisson_glmm=c(
+    u6$glm_poisson$waic$waic, 
+    u6$glm_poisson$dic$dic, 
+    u6$glm_poisson$mlik,
+    -mean(log(u6$glm_poisson$cpo$cpo))
+  ),
+  nbin_glm=c(
+    u6$glm_nbinomial$waic$waic, 
+    u6$glm_nbinomial$dic$dic, 
+    u6$glm_nbinomial$mlik,
+    -mean(log(u6$glm_nbinomial$cpo$cpo))
+  ),
+  zip_glm=c(
+    u6$glm_zeroinflatedpoisson0$waic$waic, 
+    u6$glm_zeroinflatedpoisson0$dic$dic, 
+    u6$glm_zeroinflatedpoisson0$mlik,
+    -mean(log(u6$glm_zeroinflatedpoisson0$cpo$cpo))
+  ),
+  
+  row.names = c("waic", "dic", 'mlik_int', 'mlik_gauss', "cpo")
+)
+
+# also need to get CPO out
+
+# print(t(df))
+write.csv(t(df), paste0(out, "/assessment_criteria.csv"))
+
+
+```
+
+```{r}
+
+# hyperparameters
+df_hyper <- u6$bym2_poisson$summary.hyperpar
+write.csv(df_hyper, paste0(out, "hypers.csv"))
+
+```
+
+## Create a dataframe of expected \# schools
+
+```{r}
+
+c <- results_all$`Urban 6`$glm_poisson
+map$exp_schools_glm <- c$summary.fitted.values[['mean']]
+# map$exp_schools_glm <- map$mu_est_glm * map$population_under_12
+map$residual_glm <- map$primary - map$exp_schools_glm
+st_write(map, dsn = paste0(out, 'reg_results2.geojson'))
+```
+
+## 

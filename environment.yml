@@ -1,0 +1,32 @@
+name: connectivity-analysis
+
+channels:
+  - conda-forge
+  - defaults
+  - anaconda
+
+dependencies:
+  - python=3.11.9
+  - numpy
+  - pandas
+  - seaborn
+  - matplotlib
+  - ipykernel
+  - pandarallel
+  - scikit-learn
+  - matplotlib=3.7.3
+  - esda=2.5.1
+  - odfpy
+  - folium
+  - geopandas
+  - pip
+  - geopy
+  - openpyxl
+  - polars
+  - libpysal
+  - splot
+  - pyarrow
+  - statsmodels
+  - xlsxwriter
+  - pip:
+    - plotly
